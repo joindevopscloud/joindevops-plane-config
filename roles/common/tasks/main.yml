@@ -29,7 +29,6 @@
     regexp: '^\s*upgrade_type\s*='
     line: 'upgrade_type = security'
     state: present
-  notify: none
   ignore_errors: true
 
 - name: Ensure dnf-automatic apply timer is enabled
