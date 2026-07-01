@@ -1,0 +1,73 @@
+---
+# Host nginx terminating TLS on 443 (Let's Encrypt) and reverse-proxying to
+# the Plane proxy container on {{ plane_proxy_host }}:{{ plane_proxy_port }}.
+
+- name: Install nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Ensure nginx is enabled and started
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Allow nginx to make upstream connections (SELinux)
+  ansible.builtin.command: setsebool -P httpd_can_network_connect 1
+  changed_when: false
+  failed_when: false
+
+- name: Ensure the ACME webroot exists
+  ansible.builtin.file:
+    path: /var/www/certbot
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install certbot
+  ansible.builtin.pip:
+    name: certbot
+    executable: pip3
+    state: present
+
+- name: Check for an existing TLS certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ plane_domain }}/fullchain.pem"
+  register: cert_stat
+
+- name: Record whether the certificate already exists
+  ansible.builtin.set_fact:
+    plane_cert_exists: "{{ cert_stat.stat.exists }}"
+
+# First render: if no cert yet this is HTTP-only (serves the ACME challenge
+# and proxies Plane); if a cert already exists it renders the full 443 config.
+- name: Configure nginx (current cert state)
+  ansible.builtin.include_tasks: configure_nginx.yml
+
+- name: Obtain Let's Encrypt certificate (first run only)
+  when: not plane_cert_exists
+  block:
+    - name: Run certbot (webroot challenge)
+      ansible.builtin.command: >
+        certbot certonly --webroot -w /var/www/certbot
+        -d {{ plane_domain }}
+        --non-interactive --agree-tos --keep-until-expiring
+        -m {{ certbot_email }}
+      register: certbot_run
+      changed_when: "'Congratulations' in certbot_run.stdout or 'Successfully received certificate' in certbot_run.stdout"
+
+    - name: Mark certificate as present
+      ansible.builtin.set_fact:
+        plane_cert_exists: true
+
+    - name: Re-render nginx with the TLS (443) server block
+      ansible.builtin.include_tasks: configure_nginx.yml
+
+- name: Schedule certbot renewal (daily, reload nginx on success)
+  ansible.builtin.cron:
+    name: certbot-renew
+    hour: "3"
+    minute: "30"
+    job: "certbot renew --quiet --deploy-hook 'systemctl reload nginx'"

@@ -1,0 +1,40 @@
+---
+- name: Set timezone to UTC
+  community.general.timezone:
+    name: UTC
+
+- name: Install base packages
+  ansible.builtin.dnf:
+    name:
+      - git
+      - jq
+      - tar
+      - unzip
+      - python3-pip
+      - dnf-automatic
+    state: present
+
+- name: Ensure amazon-ssm-agent is enabled and running
+  ansible.builtin.systemd:
+    name: amazon-ssm-agent
+    enabled: true
+    state: started
+  # The joindevops AMI ships the SSM agent; don't hard-fail if the unit name
+  # differs or it is managed as a snap/registered differently.
+  failed_when: false
+
+- name: Enable unattended security upgrades (dnf-automatic, security only)
+  ansible.builtin.lineinfile:
+    path: /etc/dnf/automatic.conf
+    regexp: '^\s*upgrade_type\s*='
+    line: 'upgrade_type = security'
+    state: present
+  notify: none
+  ignore_errors: true
+
+- name: Ensure dnf-automatic apply timer is enabled
+  ansible.builtin.systemd:
+    name: dnf-automatic-install.timer
+    enabled: true
+    state: started
+  failed_when: false

@@ -1,0 +1,93 @@
+---
+- name: Ensure the Plane app directory exists
+  ansible.builtin.file:
+    path: "{{ plane_home }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# ---------------------------------------------------------------------------
+# S3 bucket name from SSM Parameter Store. (SMTP creds also live in SSM under
+# /plane/smtp_* but are NOT fetched here: in v1.3.1 SMTP is configured via the
+# God Mode admin UI, not env vars — see the post-run message below.)
+# ---------------------------------------------------------------------------
+- name: Fetch S3 uploads bucket name from SSM
+  ansible.builtin.set_fact:
+    s3_bucket_name: "{{ lookup('amazon.aws.aws_ssm', '/plane/s3_bucket_name', region=aws_region) }}"
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Persistent secrets (Django SECRET_KEY, Postgres + RabbitMQ passwords).
+# Generated once and stored on the persistent EBS volume so they survive
+# instance replacement — the Postgres password in particular is baked into the
+# DB on first init and must stay stable, or auth breaks on the existing data.
+# lookup('password', ...) creates the file on first run and reads it back on
+# every subsequent run, which is what makes this idempotent.
+# ---------------------------------------------------------------------------
+- name: Generate or read the Django SECRET_KEY
+  ansible.builtin.set_fact:
+    plane_secret_key: "{{ lookup('ansible.builtin.password', secrets_dir + '/secret_key chars=ascii_letters,digits length=50') }}"
+  no_log: true
+
+- name: Generate or read the Postgres password
+  ansible.builtin.set_fact:
+    postgres_password: "{{ lookup('ansible.builtin.password', secrets_dir + '/postgres_password chars=ascii_letters,digits length=32') }}"
+  no_log: true
+
+- name: Generate or read the RabbitMQ password
+  ansible.builtin.set_fact:
+    rabbitmq_password: "{{ lookup('ansible.builtin.password', secrets_dir + '/rabbitmq_password chars=ascii_letters,digits length=32') }}"
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Render config
+# ---------------------------------------------------------------------------
+- name: Render Plane .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ plane_home }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: env_file
+
+- name: Render docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ plane_home }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: compose_file
+
+# ---------------------------------------------------------------------------
+# Bring up the stack
+# ---------------------------------------------------------------------------
+- name: Bring up the Plane Docker Compose stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ plane_home }}"
+    state: present
+    pull: always
+    remove_orphans: true
+
+# ---------------------------------------------------------------------------
+# Health check before declaring success
+# ---------------------------------------------------------------------------
+- name: Wait for Plane to respond on the local proxy port
+  ansible.builtin.uri:
+    url: "http://{{ plane_proxy_host }}:{{ plane_proxy_port }}/"
+    status_code: [200, 301, 302]
+    follow_redirects: none
+  register: plane_health
+  until: plane_health.status is defined and plane_health.status in [200, 301, 302]
+  retries: 30
+  delay: 10
+
+- name: Report success and next manual step (SMTP via God Mode)
+  ansible.builtin.debug:
+    msg:
+      - "Plane is up on {{ plane_proxy_host }}:{{ plane_proxy_port }}; host nginx serves TLS at {{ plane_web_url }}."
+      - "MANUAL STEP: configure SMTP in God Mode at {{ plane_web_url }}/god-mode/"
+      - "Use the creds in SSM: aws ssm get-parameter --name /plane/smtp_password --with-decryption --region {{ aws_region }}"

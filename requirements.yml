@@ -1,0 +1,19 @@
+---
+collections:
+  - name: amazon.aws
+    version: ">=8.0.0"
+  - name: community.docker
+    version: ">=3.10.0"
+  - name: community.general
+    version: ">=9.0.0"
+
+# Install with:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# amazon.aws is still required in local mode: the plane-bootstrap role reads
+# SMTP creds + the S3 bucket name from SSM Parameter Store (a secrets store,
+# not Session Manager) via the aws_ssm lookup.
+#
+# The (optional, deprecated) remote mode in inventory/aws_ec2.yml would also
+# need the AWS `session-manager-plugin` binary locally, but the supported path
+# is now local mode over SSH/PuTTY.

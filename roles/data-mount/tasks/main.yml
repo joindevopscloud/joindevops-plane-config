@@ -1,0 +1,34 @@
+---
+# /data is mounted by plane-infra's user_data. Re-assert it here rather than
+# assume it, and prepare the Postgres bind-mount directory.
+
+- name: Assert /data is a mounted filesystem
+  ansible.builtin.command: mountpoint -q /data
+  register: data_mounted
+  changed_when: false
+  failed_when: false
+
+- name: Fail early with a clear message if /data is not mounted
+  ansible.builtin.fail:
+    msg: >
+      /data is not mounted. It should have been mounted by the instance
+      user_data. Check the EBS data volume attachment and /etc/fstab before
+      re-running this playbook.
+  when: data_mounted.rc != 0
+
+- name: Ensure Postgres data directory exists on the persistent volume
+  ansible.builtin.file:
+    path: "{{ postgres_data_dir }}"
+    state: directory
+    # The postgres:15 image runs as uid/gid 999.
+    owner: "999"
+    group: "999"
+    mode: "0700"
+
+- name: Ensure the persistent secrets directory exists on the data volume
+  ansible.builtin.file:
+    path: "{{ secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"

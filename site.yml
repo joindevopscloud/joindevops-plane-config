@@ -1,0 +1,9 @@
+---
+- hosts: all
+  become: true
+  roles:
+    - common
+    - data-mount          # mount /data first — Docker's data-root lives on it
+    - docker
+    - plane-bootstrap
+    - nginx

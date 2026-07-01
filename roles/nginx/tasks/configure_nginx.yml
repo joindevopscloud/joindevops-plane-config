@@ -1,0 +1,22 @@
+---
+# Render + validate + reload. Included twice by main.yml: once before the cert
+# exists (HTTP-only) and once after certbot issues it (full HTTPS).
+
+- name: Render the Plane nginx site config
+  ansible.builtin.template:
+    src: plane.conf.j2
+    dest: /etc/nginx/conf.d/plane.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nginx_site
+
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  when: nginx_site.changed

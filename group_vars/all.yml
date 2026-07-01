@@ -1,0 +1,81 @@
+---
+# ---------------------------------------------------------------------------
+# Non-secret configuration only. Secrets (SMTP creds, S3 bucket name) are
+# fetched from SSM Parameter Store at runtime by the plane-bootstrap role.
+# ---------------------------------------------------------------------------
+
+# --- AWS ---
+aws_region: "us-east-1"
+
+# --- Public URL / domain (DNS managed manually in GoDaddy) ---
+plane_domain: "docs.joindevops.com"
+plane_web_url: "https://{{ plane_domain }}"
+
+# --- Plane images ---
+# Pinned to a specific release rather than the floating "stable" tag so
+# re-runs are reproducible. Latest stable community release verified on
+# Docker Hub: v1.3.1 (published 2026-05-14). To bump, change plane_image_tag
+# and confirm the new tag exists for every image below.
+# Full community image inventory tracked in the parent memory
+# (project_plane_image_versions).
+plane_image_tag: "v1.3.1"
+plane_images:
+  backend: "makeplane/plane-backend:{{ plane_image_tag }}"   # api, worker, beat, migrator
+  web:     "makeplane/plane-frontend:{{ plane_image_tag }}"
+  space:   "makeplane/plane-space:{{ plane_image_tag }}"
+  admin:   "makeplane/plane-admin:{{ plane_image_tag }}"
+  live:    "makeplane/plane-live:{{ plane_image_tag }}"       # live-collaboration server (required in v1.x)
+  proxy:   "makeplane/plane-proxy:{{ plane_image_tag }}"      # Caddy-based; runs HTTP only behind host nginx
+# NOTE: worker/beat/migrator all use the backend image (verified against the
+# v1.3.1 docker-compose.yml — they build from apps/api/Dockerfile.api). There
+# is a separate makeplane/plane-worker image on Docker Hub but it is NOT used
+# by the standard self-host compose.
+
+# Backing services, versions taken verbatim from the v1.3.1 compose / .env.example.
+postgres_image:  "postgres:15.7-alpine"
+redis_image:     "valkey/valkey:7.2.11-alpine"
+rabbitmq_image:  "rabbitmq:3.13.6-management-alpine"
+
+# --- Plane proxy container binding ---
+# Plane's own proxy (nginx) container is NOT published on the public port.
+# It binds to localhost only; the host nginx (see nginx role) terminates TLS
+# on 443 and reverse-proxies to it.
+plane_proxy_host: "127.0.0.1"
+plane_proxy_port: 8080
+
+# --- Host nginx + Let's Encrypt TLS ---
+certbot_email: "info@joindevops.com"
+
+# --- Paths ---
+plane_home: "/opt/plane"
+data_root: "/data"
+postgres_data_dir: "/data/postgres"
+# Docker stores images + container layers + volumes here. Default is
+# /var/lib/docker on the 2 GB root /var partition, far too small for the Plane
+# image set — so we relocate it onto the 30 GB persistent EBS volume.
+docker_data_root: "/data/docker"
+# Secrets that must survive an instance replacement live on the persistent
+# EBS data volume, not on the root disk.
+secrets_dir: "/data/.plane-secrets"
+
+# --- Postgres ---
+postgres_user: "plane"
+postgres_db: "plane"
+
+# --- RabbitMQ (broker, required in v1.x). Ephemeral (no volume). ---
+rabbitmq_user: "plane"
+rabbitmq_vhost: "plane"
+
+# --- File storage (external S3, not MinIO) ---
+# Credentials resolve from the EC2 instance IAM role via IMDS (no static keys).
+# That requires the instance metadata hop limit to be >= 2 (set in plane-infra
+# ec2.tf) so the containerised api can reach IMDS.
+use_minio: 0
+file_size_limit: 5242880  # 5 MB, in bytes
+
+# --- SMTP ---
+# In Plane v1.3.1 SMTP is NOT an environment variable — it is configured at
+# runtime in the God Mode admin UI (https://{{ plane_domain }}/god-mode/).
+# The credentials to enter there are stored in SSM Parameter Store:
+#   /plane/smtp_username   /plane/smtp_password
+# Retrieve with:  aws ssm get-parameter --name /plane/smtp_password --with-decryption

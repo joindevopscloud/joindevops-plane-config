@@ -1,0 +1,59 @@
+# Rendered by Ansible (nginx role). Do not edit by hand.
+
+server {
+    listen 80;
+    server_name {{ plane_domain }};
+
+    # ACME HTTP-01 challenge (certbot webroot)
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+{% if plane_cert_exists %}
+    # Everything else redirects to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name {{ plane_domain }};
+
+    ssl_certificate     /etc/letsencrypt/live/{{ plane_domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ plane_domain }}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    client_max_body_size {{ ((file_size_limit | int) / 1048576) | round(0, 'ceil') | int }}m;
+
+    location / {
+        proxy_pass http://{{ plane_proxy_host }}:{{ plane_proxy_port }};
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+}
+{% else %}
+    # No certificate yet — serve over HTTP so the box is reachable while
+    # certbot obtains the cert. Re-run flips this to the HTTPS block above.
+    location / {
+        proxy_pass http://{{ plane_proxy_host }}:{{ plane_proxy_port }};
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+}
+{% endif %}

@@ -1,0 +1,81 @@
+---
+# Docker should already be present from plane-infra's user_data. This role is
+# belt-and-suspenders: it installs Docker only if missing, and is safe to run
+# when Docker is already installed (no errors on a redundant run).
+
+- name: Check whether docker is already installed
+  ansible.builtin.command: docker --version
+  register: docker_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker CE from the RHEL repo (only if missing)
+  when: docker_check.rc != 0
+  block:
+    - name: Add Docker CE repository
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/rhel/docker-ce.repo
+        dest: /etc/yum.repos.d/docker-ce.repo
+        mode: "0644"
+
+    - name: Install Docker Engine + Compose plugin
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+
+# ---------------------------------------------------------------------------
+# Relocate Docker's data-root onto the persistent EBS volume (/data). The
+# default /var/lib/docker sits on the 2 GB root /var partition, too small for
+# the Plane image set. user_data started Docker with the default root, so
+# writing daemon.json here + restarting moves it before any images are pulled.
+# ---------------------------------------------------------------------------
+- name: Ensure Docker data-root directory exists on /data
+  ansible.builtin.file:
+    path: "{{ docker_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0710"
+
+- name: Configure Docker daemon (data-root on /data)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "data-root": "{{ docker_data_root }}"
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_daemon_json
+
+- name: Ensure docker service is enabled and running
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+# Restart in-order (not via a handler, which would fire after plane-bootstrap
+# has already pulled images to the old root) so the new data-root is active
+# before any images land.
+- name: Restart Docker now if the data-root changed
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: docker_daemon_json.changed
+
+- name: Ensure the operator user is in the docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user_id | default('ec2-user') }}"
+    groups: docker
+    append: true
+  failed_when: false
+
+- name: Verify the Compose v2 plugin is available
+  ansible.builtin.command: docker compose version
+  register: compose_check
+  changed_when: false
