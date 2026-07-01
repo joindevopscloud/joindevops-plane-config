@@ -41,12 +41,14 @@
     group: root
     mode: "0710"
 
-- name: Configure Docker daemon (data-root on /data)
+- name: Configure Docker daemon (data-root on /data, classic overlay2)
   ansible.builtin.copy:
     dest: /etc/docker/daemon.json
     content: |
       {
-        "data-root": "{{ docker_data_root }}"
+        "data-root": "{{ docker_data_root }}",
+        "storage-driver": "overlay2",
+        "features": { "containerd-snapshotter": false }
       }
     owner: root
     group: root
